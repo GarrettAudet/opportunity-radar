@@ -1,8 +1,23 @@
-# OpportunityRadar
+# Job Discovery Newsletter
 
-OpportunityRadar finds high-signal early-career opportunities for Schwarzman Scholars, ranks them against a human-editable criteria file, and sends a weekly email digest to a Google Group through Gmail SMTP.
+Job Discovery Newsletter turns scattered job postings into a shortlist tailored to a defined audience. It combines public job-board discovery, configurable filters, and AI-assisted ranking against editable criteria. Originally designed for Schwarzman Scholars, the workflow separates discovery from delivery, tracks previously evaluated opportunities, and supports digest previews before sending.
 
-The production model is intentionally narrow: GitHub Actions runs discovery and digest jobs, a private state repo stores durable JSON state, Gmail sends one message, and Google Groups manages the audience.
+The package, workflow, and configuration names use OpportunityRadar. The intended deployment described here uses GitHub Actions for discovery and digest jobs, a private repository for durable JSON state, Gmail SMTP for delivery, and Google Groups to manage the audience.
+
+## Current Configuration
+
+The repository includes discovery and ranking code, multiple delivery providers, fixture-backed tests, and local preview scripts. The Gmail SMTP and Google Groups setup below describes the intended deployment; the checked-in defaults differ from it.
+
+| Setting | Checked-in application and workflow defaults | Gmail setup described below |
+| --- | --- | --- |
+| Delivery provider | `twilio_whatsapp` | `gmail_smtp` |
+| Time zone | `America/Edmonton` | `Asia/Shanghai` |
+| Send day | Monday | Wednesday |
+| Send hour | 09:00 local time | 09:00 local time |
+
+The [workflow](.github/workflows/opportunity-radar-schedule.yml) currently triggers its weekly send guard hourly on Mondays (`0 * * * MON`). Changing the runtime day to Wednesday alone will not create a Wednesday workflow trigger. Before enabling scheduled delivery, set the provider explicitly and align the weekly cron, the workflow's schedule comparisons, and the runtime day, hour, and time zone.
+
+[Application defaults](src/opportunity_radar/config.py), [Render configuration](render.yaml), and [cost-control guidance](docs/cost-controls.md) retain Twilio-oriented settings or instructions. Review the provider-specific requirements before using them. These checked-in files describe available behavior; they do not verify the live deployment's settings or successful delivery.
 
 ## What It Does
 
@@ -193,7 +208,7 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8765/digest/preview -Header
 
 ## Other Delivery Paths
 
-The codebase still contains sender implementations for Gmail API, Microsoft Graph email, and Twilio WhatsApp. They are useful if the delivery model changes later, but this repository is currently documented around Gmail SMTP plus Google Groups because that is the intended production setup.
+The codebase includes sender implementations for Gmail SMTP, Gmail API, Microsoft Graph email, and Twilio WhatsApp. This README focuses on the intended Gmail SMTP plus Google Groups deployment. Twilio WhatsApp remains the checked-in default, as described in [Current Configuration](#current-configuration); select the desired provider explicitly.
 
 ## Verification
 
