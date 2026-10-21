@@ -20,3 +20,8 @@ __pycache__/
 
 # Local deploy artifacts
 .deploy-local/**
+
+# Local dependencies, caches, and credentials
+.env.*
+!.env.example
+!.env.sample
