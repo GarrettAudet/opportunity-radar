@@ -17,7 +17,7 @@ def main() -> int:
     parser.add_argument("--send", action="store_true", help="Send the digest to configured recipients")
     parser.add_argument("--dry-run", action="store_true", help="Preview without sending; this is the default")
     parser.add_argument("--force", action="store_true", help="Ignore sent-week and seen-job suppression")
-    parser.add_argument("--respect-schedule", action="store_true", help="Only send inside the configured local send hour")
+    parser.add_argument("--respect-schedule", action="store_true", help="Only send on the configured local day, at or after the send hour")
     parser.add_argument("--sources", default="", help="Optional sources JSON path")
     parser.add_argument("--deterministic-fallback", action="store_true", help="Use deterministic ranking if OpenRouter is unavailable")
     parser.add_argument("--include-seen", action="store_true", help="Include jobs already seen in state")

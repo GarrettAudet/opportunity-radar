@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,6 +28,46 @@ class FakeSender:
 
 
 class PipelineTests(unittest.TestCase):
+    def test_delayed_scheduled_digest_sends_from_state_only_once(self) -> None:
+        env = {
+            "OPPORTUNITY_RECIPIENTS": "group@example.com",
+            "OPPORTUNITY_TIMEZONE": "Asia/Shanghai",
+            "OPPORTUNITY_SEND_DOW": "MON",
+            "OPPORTUNITY_SEND_HOUR": "9",
+        }
+        job = JobPosting(
+            source_id="fixture", source_name="Fixture", external_id="late-send",
+            title="Strategy Associate", company="Example", location_text="Beijing",
+            city="Beijing", canonical_url="https://example.com/late-send",
+        )
+        with patch.dict(os.environ, env, clear=True), tempfile.TemporaryDirectory() as tmp:
+            store = FileJsonStore(Path(tmp) / "state.json")
+            store.save({"evaluated_jobs": {
+                job.stable_key: {"status": "included", "score": 90, "job": job.to_dict()},
+            }})
+            sender = FakeSender()
+            def scheduled_run(timestamp: str):
+                return run_digest(
+                    ROOT, send=True, respect_schedule=True, from_state=True,
+                    now=datetime.fromisoformat(timestamp), state_store=store, sender=sender,
+                )
+
+            early = scheduled_run("2026-10-19T00:59:59+00:00")
+            self.assertIn("outside_configured_send_window", early.errors)
+            self.assertEqual(sender.sent, [])
+
+            delayed = scheduled_run("2026-10-19T03:43:18+00:00")
+            self.assertEqual(delayed.errors, [])
+            self.assertTrue(delayed.state_summary["mutated"])
+            self.assertEqual(len(sender.sent), 1)
+            self.assertIn(delayed.week_key, store.load()["sent_weeks"])
+            self.assertIn(job.stable_key, store.load()["sent_jobs"])
+
+            later = scheduled_run("2026-10-19T09:41:24+00:00")
+            self.assertIn("week_already_sent", later.errors)
+            self.assertFalse(later.state_summary["mutated"])
+            self.assertEqual(len(sender.sent), 1)
+
     def test_dry_run_does_not_mutate_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = FileJsonStore(Path(tmp) / "state.json")

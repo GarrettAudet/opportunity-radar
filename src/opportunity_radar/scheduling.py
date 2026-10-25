@@ -29,6 +29,12 @@ def week_key_for(now: datetime | None, timezone_name: str) -> str:
 
 
 def should_send_now(now: datetime | None, *, timezone_name: str, send_dow: str, send_hour: int) -> bool:
+    """Allow same-day catch-up after the send hour; the pipeline guards sent weeks."""
     local = local_now(now, timezone_name)
     wanted_dow = DOW_ALIASES.get(send_dow.upper()[:3])
-    return wanted_dow is not None and local.weekday() == wanted_dow and local.hour == send_hour
+    return (
+        wanted_dow is not None
+        and 0 <= send_hour <= 23
+        and local.weekday() == wanted_dow
+        and local.hour >= send_hour
+    )

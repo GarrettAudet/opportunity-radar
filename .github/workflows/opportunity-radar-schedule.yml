@@ -28,7 +28,7 @@ on:
     # UTC schedules. The weekly sender still checks OPPORTUNITY_SEND_* locally.
     - cron: "0 14 * * MON" # registry refresh
     - cron: "0 15 * * *" # daily discovery
-    - cron: "0 * * * MON" # weekly send guard
+    - cron: "17 * * * MON" # weekly send guard, away from top-of-hour congestion
 
 permissions:
   contents: read
@@ -144,7 +144,7 @@ jobs:
       - name: Check send readiness
         if: >-
           ${{
-            (github.event_name == 'schedule' && vars.OPPORTUNITY_SCHEDULER_ENABLED == 'true' && github.event.schedule == '0 * * * MON') ||
+            (github.event_name == 'schedule' && vars.OPPORTUNITY_SCHEDULER_ENABLED == 'true' && github.event.schedule == '17 * * * MON') ||
             (github.event_name == 'workflow_dispatch' && inputs.task == 'weekly-send')
           }}
         run: python scripts/check_send_ready.py --root .
@@ -152,7 +152,7 @@ jobs:
       - name: Run weekly digest
         if: >-
           ${{
-            (github.event_name == 'schedule' && vars.OPPORTUNITY_SCHEDULER_ENABLED == 'true' && github.event.schedule == '0 * * * MON') ||
+            (github.event_name == 'schedule' && vars.OPPORTUNITY_SCHEDULER_ENABLED == 'true' && github.event.schedule == '17 * * * MON') ||
             (github.event_name == 'workflow_dispatch' && (inputs.task == 'all-preview' || inputs.task == 'weekly-preview' || inputs.task == 'weekly-send'))
           }}
         run: |
