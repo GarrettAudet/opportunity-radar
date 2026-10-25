@@ -25,6 +25,17 @@ class FakeResponse:
 
 
 class GithubJsonStoreTests(unittest.TestCase):
+    def test_save_retries_preserve_daily_delivery_markers(self) -> None:
+        store = GithubJsonStore("owner/repo", "state.json", "token", user_agent="test")
+        current = {"sent_days": {"2026-10-26": {"run_id": "other"}}}
+        incoming = {"sent_days": {"2026-10-27": {"run_id": "ours"}}}
+        conflict = urllib.error.HTTPError("https://api.github.com", 409, "Conflict", {}, io.BytesIO(b"{}"))
+        with patch.object(store, "load_with_sha", side_effect=[({}, "old"), (current, "new")]), patch("urllib.request.urlopen", side_effect=[conflict, FakeResponse("{}")]) as urlopen:
+            store.save(incoming)
+        body = json.loads(urlopen.call_args.args[0].data)
+        saved = json.loads(base64.b64decode(body["content"]))
+        self.assertEqual(saved.get("sent_days"), {**current["sent_days"], **incoming["sent_days"]})
+
     def test_save_compacts_upload_without_losing_state_or_unicode(self) -> None:
         payload = {"version": 1, "evaluated_jobs": {"job-1": {"title": "北京 analyst", "description": "two  spaces\nnew line"}}, "sent_weeks": {"2026-W40": {"run_id": "sent"}}}
         store = GithubJsonStore("owner/repo", "opportunity-state.json", "token", user_agent="test")

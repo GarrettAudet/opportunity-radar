@@ -31,6 +31,7 @@ def empty_state() -> dict[str, Any]:
         "seen_jobs": {},
         "sent_jobs": {},
         "sent_weeks": {},
+        "sent_days": {},
         "evaluated_jobs": {},
         "source_cache": {},
         "board_registry": {},
@@ -188,6 +189,7 @@ def merge_state(current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, 
     merged["seen_jobs"] = {**current.get("seen_jobs", {}), **incoming.get("seen_jobs", {})}
     merged["sent_jobs"] = {**current.get("sent_jobs", {}), **incoming.get("sent_jobs", {})}
     merged["sent_weeks"] = {**current.get("sent_weeks", {}), **incoming.get("sent_weeks", {})}
+    merged["sent_days"] = {**current.get("sent_days", {}), **incoming.get("sent_days", {})}
     merged["evaluated_jobs"] = {**current.get("evaluated_jobs", {}), **incoming.get("evaluated_jobs", {})}
     merged["source_cache"] = {**current.get("source_cache", {}), **incoming.get("source_cache", {})}
     merged["board_registry"] = {**current.get("board_registry", {}), **incoming.get("board_registry", {})}

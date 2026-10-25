@@ -75,7 +75,8 @@ def grouped_opportunities(selected: list[RankedOpportunity]) -> list[tuple[str, 
     return [(label, buckets[label]) for label in labels]
 
 
-def trend_sentence(selected: list[RankedOpportunity]) -> str:
+def trend_sentence(selected: list[RankedOpportunity], *, daily: bool = False) -> str:
+    prefix = "Today's list" if daily else "This week's list"
     city_counts = Counter(item.job.city for item in selected if item.job.city)
     group_counts = Counter(digest_group_label(item) for item in selected)
     theme_counts: Counter[str] = Counter()
@@ -104,12 +105,12 @@ def trend_sentence(selected: list[RankedOpportunity]) -> str:
     if top_themes:
         theme_part = "a noticeable tilt toward " + human_join(top_themes)
     if city_part and theme_part:
-        return f"This week's list has {city_part}, with {theme_part}."
+        return f"{prefix} has {city_part}, with {theme_part}."
     if city_part:
-        return f"This week's list has {city_part}, with a broad mix of role types."
+        return f"{prefix} has {city_part}, with a broad mix of role types."
     if theme_part:
-        return f"This week's list has {theme_part}."
-    return "This week's list is a mixed set of strategy, product, policy, investing, and frontier-tech roles."
+        return f"{prefix} has {theme_part}."
+    return f"{prefix} is a mixed set of strategy, product, policy, investing, and frontier-tech roles."
 
 
 def human_join(items: list[str]) -> str:
@@ -122,14 +123,18 @@ def human_join(items: list[str]) -> str:
     return ", ".join(items[:-1]) + f", and {items[-1]}"
 
 
-def format_digest(selected: list[RankedOpportunity], *, week_key: str, errors: list[str] | None = None) -> str:
-    week_range = week_date_range(week_key)
+def format_digest(selected: list[RankedOpportunity], *, week_key: str, day_key: str = "", errors: list[str] | None = None) -> str:
+    if day_key:
+        day = date.fromisoformat(day_key)
+        period = f"{day.strftime('%B')} {day.day}, {day.year}"
+    else:
+        period = f"the week of {week_date_range(week_key)}"
     if not selected:
         return "\n".join(
             [
                 "Hello everyone,",
                 "",
-                f"No new high-signal roles matched the criteria for the week of {week_range}.",
+                f"No new high-signal roles matched the criteria for {period}.",
                 "",
                 "Best,",
                 "Garrett",
@@ -138,8 +143,8 @@ def format_digest(selected: list[RankedOpportunity], *, week_key: str, errors: l
     lines = [
         "Hello everyone,",
         "",
-        f"Here is this week's curated list of interesting roles for Schwarzman Scholars for the week of {week_range}.",
-        trend_sentence(selected),
+        f"Here is {'today' if day_key else 'this week'}'s curated list of interesting roles for Schwarzman Scholars for {period}.",
+        trend_sentence(selected, daily=bool(day_key)),
         "",
     ]
     display_rank = 1

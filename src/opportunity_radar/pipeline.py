@@ -13,7 +13,7 @@ from .digest import format_digest
 from .filtering import dedupe_jobs, remove_seen_jobs, source_filter_allows
 from .models import DigestRun, JobPosting, RankedOpportunity, SourceResult, now_iso
 from .ranker import rank_deterministically, rank_with_llm
-from .scheduling import should_send_now, week_key_for
+from .scheduling import day_key_for, should_send_now, week_key_for
 from .sender import DryRunSender, GmailEmailSender, GmailSmtpSender, MicrosoftGraphEmailSender, Sender, TwilioWhatsAppSender, normalize_send_provider
 from .twilio_whatsapp import twilio_send_config_errors
 from .microsoft_graph import microsoft_graph_send_config_errors
@@ -102,7 +102,22 @@ def ranked_from_evaluated_state(
     return selected, len(ranked)
 
 
-def update_state_after_send(state: dict[str, Any], *, week_key: str, selected: list[RankedOpportunity], run_payload: dict[str, Any]) -> dict[str, Any]:
+def already_sent_on_day(state: dict[str, Any], day_key: str, timezone_name: str) -> bool:
+    if day_key in state.get("sent_days", {}):
+        return True
+    # Older deployments have only weekly markers. Honor a delivery made today
+    # when switching cadence, without blocking the rest of that week.
+    for entry in state.get("sent_weeks", {}).values():
+        try:
+            sent_at = datetime.fromisoformat(entry["sent_at"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if day_key_for(sent_at, timezone_name) == day_key:
+            return True
+    return False
+
+
+def update_state_after_send(state: dict[str, Any], *, week_key: str, day_key: str, selected: list[RankedOpportunity], run_payload: dict[str, Any]) -> dict[str, Any]:
     sent_at = now_iso()
     seen_jobs = state.setdefault("seen_jobs", {})
     sent_jobs = state.setdefault("sent_jobs", {})
@@ -125,6 +140,7 @@ def update_state_after_send(state: dict[str, Any], *, week_key: str, selected: l
             "url": item.job.canonical_url,
         }
     state.setdefault("sent_weeks", {})[week_key] = {"sent_at": sent_at, "run_id": run_payload.get("run_id", "")}
+    state.setdefault("sent_days", {})[day_key] = {"sent_at": sent_at, "run_id": run_payload.get("run_id", "")}
     runs = state.setdefault("runs", [])
     runs.append(run_payload)
     state["runs"] = runs[-50:]
@@ -226,12 +242,14 @@ def run_digest(
     run_id = secrets.token_hex(8)
     config = load_runtime_config(root)
     week_key = week_key_for(now, config.timezone)
+    day_key = day_key_for(now, config.timezone)
+    daily = config.send_frequency == "daily"
     errors: list[str] = []
     dry_run = not send
     state_store = state_store or state_store_from_env(root)
     state = state_store.load()
 
-    if respect_schedule and send and not should_send_now(now, timezone_name=config.timezone, send_dow=config.send_dow, send_hour=config.send_hour):
+    if respect_schedule and send and not should_send_now(now, timezone_name=config.timezone, send_dow=config.send_dow, send_hour=config.send_hour, frequency=config.send_frequency):
         errors.append("outside_configured_send_window")
         return DigestRun(
             run_id=run_id,
@@ -246,8 +264,9 @@ def run_digest(
             errors=errors,
             state_summary={"mutated": False},
         )
-    if send and not force and week_key in state.get("sent_weeks", {}):
-        errors.append("week_already_sent")
+    already_sent = already_sent_on_day(state, day_key, config.timezone) if daily else week_key in state.get("sent_weeks", {})
+    if send and not force and already_sent:
+        errors.append("day_already_sent" if daily else "week_already_sent")
         return DigestRun(
             run_id=run_id,
             week_key=week_key,
@@ -271,7 +290,7 @@ def run_digest(
         )
         if not state.get("evaluated_jobs"):
             errors.append("no_evaluated_jobs")
-        digest_text = format_digest(selected, week_key=week_key, errors=errors)
+        digest_text = format_digest(selected, week_key=week_key, day_key=day_key if daily else "", errors=errors)
         recipient_results = send_selected_digest(
             config=config,
             send=send,
@@ -304,7 +323,7 @@ def run_digest(
         if send:
             all_recipient_ok = bool(recipient_results) and all(result.ok for result in recipient_results)
             if all_recipient_ok:
-                update_state_after_send(state, week_key=week_key, selected=selected, run_payload=run_payload)
+                update_state_after_send(state, week_key=week_key, day_key=day_key, selected=selected, run_payload=run_payload)
                 state_store.save(state)
                 digest_run = DigestRun(
                     **{
@@ -368,7 +387,7 @@ def run_digest(
             selected = []
 
     selected = diversify_ranked(selected, max_jobs=config.max_jobs, max_jobs_per_company=config.max_jobs_per_company)
-    digest_text = format_digest(selected, week_key=week_key, errors=errors)
+    digest_text = format_digest(selected, week_key=week_key, day_key=day_key if daily else "", errors=errors)
     recipient_results = send_selected_digest(
         config=config,
         send=send,
@@ -402,7 +421,7 @@ def run_digest(
     if send:
         all_recipient_ok = bool(recipient_results) and all(result.ok for result in recipient_results)
         if all_recipient_ok:
-            update_state_after_send(state, week_key=week_key, selected=selected, run_payload=run_payload)
+            update_state_after_send(state, week_key=week_key, day_key=day_key, selected=selected, run_payload=run_payload)
             state_store.save(state)
             digest_run = DigestRun(**{**digest_run.__dict__, "state_summary": {"mutated": True, "seen_jobs": len(state.get("seen_jobs", {})), "sent_jobs": len(state.get("sent_jobs", {}))}})
     return digest_run

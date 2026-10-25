@@ -28,13 +28,17 @@ def week_key_for(now: datetime | None, timezone_name: str) -> str:
     return f"{year}-W{week:02d}"
 
 
-def should_send_now(now: datetime | None, *, timezone_name: str, send_dow: str, send_hour: int) -> bool:
-    """Allow same-day catch-up after the send hour; the pipeline guards sent weeks."""
+def day_key_for(now: datetime | None, timezone_name: str) -> str:
+    return local_now(now, timezone_name).date().isoformat()
+
+
+def should_send_now(now: datetime | None, *, timezone_name: str, send_dow: str, send_hour: int, frequency: str = "weekly") -> bool:
+    """Allow same-day catch-up; the pipeline enforces daily or weekly suppression."""
     local = local_now(now, timezone_name)
     wanted_dow = DOW_ALIASES.get(send_dow.upper()[:3])
     return (
-        wanted_dow is not None
+        frequency in {"daily", "weekly"}
         and 0 <= send_hour <= 23
-        and local.weekday() == wanted_dow
+        and (frequency == "daily" or (wanted_dow is not None and local.weekday() == wanted_dow))
         and local.hour >= send_hour
     )
