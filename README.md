@@ -15,7 +15,7 @@ The repository includes discovery and ranking code, multiple delivery providers,
 | Send day | Monday | Wednesday |
 | Send hour | 09:00 local time | 09:00 local time |
 
-The [workflow](.github/workflows/opportunity-radar-schedule.yml) currently triggers its weekly send guard hourly on Mondays (`0 * * * MON`). Changing the runtime day to Wednesday alone will not create a Wednesday workflow trigger. Before enabling scheduled delivery, set the provider explicitly and align the weekly cron, the workflow's schedule comparisons, and the runtime day, hour, and time zone.
+The [workflow](.github/workflows/opportunity-radar-schedule.yml) currently triggers its weekly send guard at minute 17 of each hour on Mondays UTC (`17 * * * MON`). Changing the runtime day to Wednesday alone will not create a Wednesday workflow trigger. Before enabling scheduled delivery, set the provider explicitly and align the weekly cron, the workflow's schedule comparisons, and the runtime day, hour, and time zone.
 
 [Application defaults](src/opportunity_radar/config.py), [Render configuration](render.yaml), and [cost-control guidance](docs/cost-controls.md) retain Twilio-oriented settings or instructions. Review the provider-specific requirements before using them. These checked-in files describe available behavior; they do not verify the live deployment's settings or successful delivery.
 
@@ -49,7 +49,7 @@ Manual workflow tasks behave differently:
 | `weekly-preview` | Builds the weekly digest from state without sending. |
 | `weekly-send` | Checks Gmail SMTP readiness, then sends the digest from state. |
 
-A scheduled weekly run sends only when `OPPORTUNITY_SCHEDULER_ENABLED=true` and the runtime schedule guard matches `OPPORTUNITY_TIMEZONE`, `OPPORTUNITY_SEND_DOW`, and `OPPORTUNITY_SEND_HOUR`. Manual `weekly-send` is for test sends and operational retries.
+A scheduled weekly run sends only when `OPPORTUNITY_SCHEDULER_ENABLED=true` and it is the configured `OPPORTUNITY_SEND_DOW` in `OPPORTUNITY_TIMEZONE`, at or after `OPPORTUNITY_SEND_HOUR`. The window stays open until local midnight so delayed runs can catch up. The saved `sent_weeks` entry prevents later runs from sending again that week. Manual `weekly-send` is for test sends and operational retries.
 
 ## Architecture
 
@@ -108,10 +108,10 @@ SMTP_FROM=Schwarzman Job Updates <schwarzmanjobupdates@gmail.com>
 SMTP_USE_STARTTLS=true
 ```
 
-For Wednesday 09:00 Beijing time, keep the GitHub Actions weekly cron aligned with the runtime guard:
+For Wednesday delivery from 09:00 Beijing time, keep hourly catch-up attempts aligned with the runtime guard. This example checks from 09:17 through 23:17 Beijing time:
 
 ```yaml
-- cron: "0 1 * * WED" # 09:00 Asia/Shanghai
+- cron: "17 1-15 * * WED" # Wednesday 09:17-23:17 Asia/Shanghai
 ```
 
 The `Check send readiness` and `Run weekly digest` schedule checks in the workflow should compare `github.event.schedule` to that same cron string.
@@ -138,6 +138,13 @@ Then run `discovery` and confirm it finishes with `State mutated: True`, followe
 `weekly-preview` to inspect the available jobs before a manual send. A green scheduled
 run can simply mean `outside_configured_send_window`; it does not prove email delivery.
 Look for `Recipients sent: 1/1` in a send run, and confirm Google Group delivery separately.
+
+GitHub can delay or drop scheduled events. The send hour is the earliest allowed
+hour, not a guaranteed delivery time. Hourly attempts can recover later on the
+configured local day; an attempt before that hour or after local midnight skips.
+`week_already_sent` means the current week's delivery was already recorded.
+The weekly cron uses minute 17 to avoid the busiest top-of-hour period; see
+[GitHub's schedule documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
 
 If discovery fails in `GithubJsonStore.save`, inspect the HTTP status and GitHub error
 details. State uploads use compact JSON and retry temporary server failures up to three
