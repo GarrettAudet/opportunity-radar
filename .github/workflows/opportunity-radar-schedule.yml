@@ -12,8 +12,8 @@ on:
           - all-preview
           - registry
           - discovery
-          - weekly-preview
-          - weekly-send
+          - daily-preview
+          - daily-send
       deterministic_fallback:
         description: Use deterministic ranking fallback for manual discovery if OpenRouter is not configured.
         required: false
@@ -25,10 +25,10 @@ on:
         default: false
         type: boolean
   schedule:
-    # UTC schedules. The weekly sender still checks OPPORTUNITY_SEND_* locally.
+    # UTC schedules. The sender checks the configured local hour and daily lock.
     - cron: "0 14 * * MON" # registry refresh
     - cron: "0 15 * * *" # daily discovery
-    - cron: "17 * * * MON" # weekly send guard, away from top-of-hour congestion
+    - cron: "17 * * * *" # daily send guard, away from top-of-hour congestion
 
 permissions:
   contents: read
@@ -44,10 +44,11 @@ jobs:
     env:
       PYTHON_VERSION: "3.11"
       OPPORTUNITY_TIMEZONE: ${{ vars.OPPORTUNITY_TIMEZONE || 'America/Edmonton' }}
+      OPPORTUNITY_SEND_FREQUENCY: ${{ vars.OPPORTUNITY_SEND_FREQUENCY || 'daily' }}
       OPPORTUNITY_SEND_DOW: ${{ vars.OPPORTUNITY_SEND_DOW || 'MON' }}
       OPPORTUNITY_SEND_HOUR: ${{ vars.OPPORTUNITY_SEND_HOUR || '9' }}
       OPPORTUNITY_SEND_PROVIDER: ${{ vars.OPPORTUNITY_SEND_PROVIDER || 'twilio_whatsapp' }}
-      OPPORTUNITY_EMAIL_SUBJECT: ${{ vars.OPPORTUNITY_EMAIL_SUBJECT || 'OpportunityRadar weekly jobs' }}
+      OPPORTUNITY_EMAIL_SUBJECT: ${{ vars.OPPORTUNITY_EMAIL_SUBJECT || 'Daily Job Newsletter' }}
       OPPORTUNITY_MAX_JOBS: ${{ vars.OPPORTUNITY_MAX_JOBS || '30' }}
       OPPORTUNITY_MIN_JOBS: ${{ vars.OPPORTUNITY_MIN_JOBS || '15' }}
       OPPORTUNITY_MAX_JOBS_PER_COMPANY: ${{ vars.OPPORTUNITY_MAX_JOBS_PER_COMPANY || '2' }}
@@ -144,21 +145,21 @@ jobs:
       - name: Check send readiness
         if: >-
           ${{
-            (github.event_name == 'schedule' && vars.OPPORTUNITY_SCHEDULER_ENABLED == 'true' && github.event.schedule == '17 * * * MON') ||
-            (github.event_name == 'workflow_dispatch' && inputs.task == 'weekly-send')
+            (github.event_name == 'schedule' && vars.OPPORTUNITY_SCHEDULER_ENABLED == 'true' && github.event.schedule == '17 * * * *') ||
+            (github.event_name == 'workflow_dispatch' && (inputs.task == 'daily-send' || inputs.task == 'weekly-send'))
           }}
         run: python scripts/check_send_ready.py --root .
 
-      - name: Run weekly digest
+      - name: Run daily digest
         if: >-
           ${{
-            (github.event_name == 'schedule' && vars.OPPORTUNITY_SCHEDULER_ENABLED == 'true' && github.event.schedule == '17 * * * MON') ||
-            (github.event_name == 'workflow_dispatch' && (inputs.task == 'all-preview' || inputs.task == 'weekly-preview' || inputs.task == 'weekly-send'))
+            (github.event_name == 'schedule' && vars.OPPORTUNITY_SCHEDULER_ENABLED == 'true' && github.event.schedule == '17 * * * *') ||
+            (github.event_name == 'workflow_dispatch' && (inputs.task == 'all-preview' || inputs.task == 'daily-preview' || inputs.task == 'daily-send' || inputs.task == 'weekly-preview' || inputs.task == 'weekly-send'))
           }}
         run: |
           if [ "${GITHUB_EVENT_NAME}" = "schedule" ]; then
             python scripts/run_weekly_digest.py --root . --send --respect-schedule --from-state
-          elif [ "${MANUAL_TASK}" = "weekly-send" ]; then
+          elif [ "${MANUAL_TASK}" = "daily-send" ] || [ "${MANUAL_TASK}" = "weekly-send" ]; then
             python scripts/run_weekly_digest.py --root . --send --from-state
           else
             python scripts/run_weekly_digest.py --root . --from-state

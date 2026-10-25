@@ -8,14 +8,15 @@ The package, workflow, and configuration names use OpportunityRadar. The intende
 
 The repository includes discovery and ranking code, multiple delivery providers, fixture-backed tests, and local preview scripts. The Gmail SMTP and Google Groups setup below describes the intended deployment; the checked-in defaults differ from it.
 
-| Setting | Checked-in application and workflow defaults | Gmail setup described below |
+| Setting | Application defaults | Daily Gmail setup described below |
 | --- | --- | --- |
 | Delivery provider | `twilio_whatsapp` | `gmail_smtp` |
 | Time zone | `America/Edmonton` | `Asia/Shanghai` |
-| Send day | Monday | Wednesday |
+| Send frequency | Weekly | Daily |
+| Send day | Monday (weekly mode only) | Every day |
 | Send hour | 09:00 local time | 09:00 local time |
 
-The [workflow](.github/workflows/opportunity-radar-schedule.yml) currently triggers its weekly send guard at minute 17 of each hour on Mondays UTC (`17 * * * MON`). Changing the runtime day to Wednesday alone will not create a Wednesday workflow trigger. Before enabling scheduled delivery, set the provider explicitly and align the weekly cron, the workflow's schedule comparisons, and the runtime day, hour, and time zone.
+The [workflow](.github/workflows/opportunity-radar-schedule.yml) triggers its send guard at minute 17 of every hour, every day (`17 * * * *`), and defaults `OPPORTUNITY_SEND_FREQUENCY` to `daily`. The application default remains `weekly` for existing deployments outside this workflow. Set the provider, frequency, time zone, and earliest send hour explicitly in repository variables. `OPPORTUNITY_SEND_DOW` applies only in weekly mode.
 
 [Application defaults](src/opportunity_radar/config.py), [Render configuration](render.yaml), and [cost-control guidance](docs/cost-controls.md) retain Twilio-oriented settings or instructions. Review the provider-specific requirements before using them. These checked-in files describe available behavior; they do not verify the live deployment's settings or successful delivery.
 
@@ -24,8 +25,8 @@ The [workflow](.github/workflows/opportunity-radar-schedule.yml) currently trigg
 - Discovers public Greenhouse boards from Common Crawl and stores reusable board tokens in state.
 - Polls active ATS boards daily, normalizes target-city postings, and filters out noisy roles before ranking.
 - Uses `docs/opportunity-criteria.md` plus an LLM ranker to decide which roles belong in the digest.
-- Stores evaluated jobs in durable JSON state so the weekly digest can send only unsent included opportunities.
-- Sends one weekly plain-text email through Gmail SMTP to a configured Google Group.
+- Stores evaluated jobs in durable JSON state so the daily digest can send only unsent included opportunities.
+- Sends at most one daily plain-text email through Gmail SMTP to a configured Google Group when unsent matches are available.
 - Leaves subscriber management, additions, removals, and delivery permissions to Google Groups.
 - Provides local scripts, fixture-backed smoke runs, and protected API endpoints for manual checks.
 
@@ -37,7 +38,7 @@ The app has three scheduled jobs in `.github/workflows/opportunity-radar-schedul
 | --- | --- | --- |
 | Registry refresh | Finds and stores public ATS board tokens. | No |
 | Daily discovery | Polls boards, filters/ranks jobs, and writes evaluated state. | No |
-| Weekly digest | Reads unsent included jobs from state and emails the Google Group. | Yes, when configured |
+| Daily digest | Reads unsent included jobs from state and emails the Google Group. | Yes, when configured |
 
 Manual workflow tasks behave differently:
 
@@ -46,10 +47,12 @@ Manual workflow tasks behave differently:
 | `all-preview` | Runs registry, discovery, and a digest preview. It never sends email. |
 | `registry` | Runs only the registry refresh. |
 | `discovery` | Runs only daily discovery. |
-| `weekly-preview` | Builds the weekly digest from state without sending. |
-| `weekly-send` | Checks Gmail SMTP readiness, then sends the digest from state. |
+| `daily-preview` | Builds today's digest from state without sending. |
+| `daily-send` | Checks Gmail SMTP readiness, then sends the digest from state. |
 
-A scheduled weekly run sends only when `OPPORTUNITY_SCHEDULER_ENABLED=true` and it is the configured `OPPORTUNITY_SEND_DOW` in `OPPORTUNITY_TIMEZONE`, at or after `OPPORTUNITY_SEND_HOUR`. The window stays open until local midnight so delayed runs can catch up. The saved `sent_weeks` entry prevents later runs from sending again that week. Manual `weekly-send` is for test sends and operational retries.
+A scheduled daily run sends only when `OPPORTUNITY_SCHEDULER_ENABLED=true`, at or after `OPPORTUNITY_SEND_HOUR` in `OPPORTUNITY_TIMEZONE`. The window stays open until local midnight so delayed runs can catch up. The saved `sent_days` entry prevents another send on that local date, including manual retries. The next day can send new jobs even within the same week. With no unsent matches, the default is to skip an empty email and try again later. Weekly mode still uses `OPPORTUNITY_SEND_DOW` and `sent_weeks`; legacy weekly markers prevent a duplicate on the day daily mode is enabled.
+
+Manual `daily-send` bypasses the time-of-day guard but keeps daily and job duplicate suppression. The workflow accepts the old `weekly-preview` and `weekly-send` task names as aliases; the CLI filename `scripts/run_weekly_digest.py` is retained for compatibility and follows the configured frequency.
 
 ## Architecture
 
@@ -63,7 +66,7 @@ flowchart LR
     F --> G[LLM Ranker]
     G --> H[Evaluated Jobs in State]
     H <--> C
-    I[Weekly GitHub Actions Scheduler] --> J[Digest From Unsent Winners]
+    I[Daily GitHub Actions Scheduler] --> J[Digest From Unsent Winners]
     J <--> C
     J --> K[Gmail SMTP Sender]
     L[Protected API] --> J
@@ -95,10 +98,10 @@ Use GitHub repository variables for non-secret settings:
 ```text
 OPPORTUNITY_SCHEDULER_ENABLED=true
 OPPORTUNITY_TIMEZONE=Asia/Shanghai
-OPPORTUNITY_SEND_DOW=WED
+OPPORTUNITY_SEND_FREQUENCY=daily
 OPPORTUNITY_SEND_HOUR=9
 OPPORTUNITY_SEND_PROVIDER=gmail_smtp
-OPPORTUNITY_EMAIL_SUBJECT=Weekly Job Newsletter
+OPPORTUNITY_EMAIL_SUBJECT=Daily Job Newsletter
 OPPORTUNITY_MAX_JOBS=30
 OPPORTUNITY_MIN_JOBS=15
 OPPORTUNITY_MAX_JOBS_PER_COMPANY=2
@@ -108,24 +111,24 @@ SMTP_FROM=Schwarzman Job Updates <schwarzmanjobupdates@gmail.com>
 SMTP_USE_STARTTLS=true
 ```
 
-For Wednesday delivery from 09:00 Beijing time, keep hourly catch-up attempts aligned with the runtime guard. This example checks from 09:17 through 23:17 Beijing time:
+For daily delivery from 09:00 Beijing time, the workflow keeps hourly attempts throughout the week. The local-time guard skips attempts before 09:00; the first eligible cron is 09:17, subject to GitHub delays:
 
 ```yaml
-- cron: "17 1-15 * * WED" # Wednesday 09:17-23:17 Asia/Shanghai
+- cron: "17 * * * *" # hourly, every day; runtime guard uses Asia/Shanghai
 ```
 
-The `Check send readiness` and `Run weekly digest` schedule checks in the workflow should compare `github.event.schedule` to that same cron string.
+The `Check send readiness` and `Run daily digest` schedule checks in the workflow compare `github.event.schedule` to that same cron string. Daily discovery still runs once per day; registry refresh remains weekly.
 
 ## Manual Sends
 
 Use manual sends for smoke tests and one-off retries:
 
 1. Open **Actions** -> **OpportunityRadar schedule** -> **Run workflow**.
-2. Choose `weekly-send`, not `all-preview`.
+2. Choose `daily-send`, not `all-preview`.
 3. Confirm the run includes the `Check send readiness` step.
 4. Confirm Gmail accepted the SMTP send and the Google Group delivered it to members.
 
-`all-preview` and `weekly-preview` are deliberately safe: they build previews but never email the group.
+`all-preview` and `daily-preview` build previews without emailing the group.
 
 ## If Postings Stop
 
@@ -135,15 +138,16 @@ activity. Updates in the separate private state repository do not keep this publ
 repository active. If the page reports inactivity, click **Enable workflow**.
 
 Then run `discovery` and confirm it finishes with `State mutated: True`, followed by
-`weekly-preview` to inspect the available jobs before a manual send. A green scheduled
+`daily-preview` to inspect the available jobs before a manual send. A green scheduled
 run can simply mean `outside_configured_send_window`; it does not prove email delivery.
 Look for `Recipients sent: 1/1` in a send run, and confirm Google Group delivery separately.
 
 GitHub can delay or drop scheduled events. The send hour is the earliest allowed
 hour, not a guaranteed delivery time. Hourly attempts can recover later on the
-configured local day; an attempt before that hour or after local midnight skips.
+local day; a new day's window opens at the configured hour.
+`day_already_sent` means today's delivery was already recorded. In weekly mode,
 `week_already_sent` means the current week's delivery was already recorded.
-The weekly cron uses minute 17 to avoid the busiest top-of-hour period; see
+The send cron uses minute 17 to avoid the busiest top-of-hour period; see
 [GitHub's schedule documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
 
 If discovery fails in `GithubJsonStore.save`, inspect the HTTP status and GitHub error
@@ -181,7 +185,7 @@ Run fixture-backed discovery without writing state:
 python scripts\run_discovery.py --root . --sources tests\fixtures\sources.fixture.json --conditions tests\fixtures\conditions.fixture.json --deterministic-fallback --json
 ```
 
-Preview a fixture-backed weekly digest without spending model tokens:
+Preview a fixture-backed digest without spending model tokens:
 
 ```powershell
 python scripts\run_weekly_digest.py --root . --sources tests\fixtures\sources.fixture.json --deterministic-fallback --include-seen
@@ -231,6 +235,6 @@ The gate compiles Python, runs unit/integration tests, performs fixture-backed r
 
 `render.yaml` defines only the optional free Render web service. It does not create Render cron services because those can require paid cron billing.
 
-Scheduled work is owned by GitHub Actions. Before enabling live sends, run `weekly-send` manually with a test recipient and confirm the Gmail-to-Google-Groups path is ready.
+Scheduled work is owned by GitHub Actions. Before enabling live sends on a new deployment, run `daily-send` manually with a test recipient and confirm the Gmail-to-Google-Groups path is ready.
 
 See `docs/cost-controls.md` for budget controls and `docs/private-state-repo-readme.md` for the private state repo layout.

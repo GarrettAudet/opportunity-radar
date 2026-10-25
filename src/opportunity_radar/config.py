@@ -74,12 +74,17 @@ class RuntimeConfig:
     google_gmail_from: str
     google_recipients_sheet_id: str
     google_recipients_range: str
+    send_frequency: str = "weekly"
 
 
 def load_runtime_config(root: Path) -> RuntimeConfig:
     load_env(root)
+    frequency = os.environ.get("OPPORTUNITY_SEND_FREQUENCY", "weekly").strip().lower() or "weekly"
+    if frequency not in {"daily", "weekly"}:
+        raise ValueError("OPPORTUNITY_SEND_FREQUENCY must be daily or weekly")
     cities = canonical_city_set(env_csv("OPPORTUNITY_CITIES") or list(CANONICAL_CITIES))
     return RuntimeConfig(
+        send_frequency=frequency,
         timezone=os.environ.get("OPPORTUNITY_TIMEZONE", DEFAULT_TIMEZONE).strip() or DEFAULT_TIMEZONE,
         send_dow=os.environ.get("OPPORTUNITY_SEND_DOW", DEFAULT_SEND_DOW).strip().upper() or DEFAULT_SEND_DOW,
         send_hour=int(os.environ.get("OPPORTUNITY_SEND_HOUR", str(DEFAULT_SEND_HOUR))),
