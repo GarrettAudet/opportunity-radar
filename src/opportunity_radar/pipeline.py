@@ -10,8 +10,8 @@ from .adapters import fetch_source
 from .config import default_sources_path, load_runtime_config, read_json
 from .criteria import load_criteria
 from .digest import format_digest
-from .filtering import dedupe_jobs, remove_seen_jobs, source_filter_allows
-from .models import DigestRun, JobPosting, RankedOpportunity, SourceResult, now_iso
+from .filtering import dedupe_jobs, delivered_job_identities, job_identity_keys, remove_seen_jobs, role_focus_allows, source_filter_allows
+from .models import DigestRun, JobPosting, RankedOpportunity, RecipientResult, SourceResult, now_iso
 from .ranker import rank_deterministically, rank_with_llm
 from .scheduling import day_key_for, should_send_now, week_key_for
 from .sender import DryRunSender, GmailEmailSender, GmailSmtpSender, MicrosoftGraphEmailSender, Sender, TwilioWhatsAppSender, normalize_send_provider
@@ -73,12 +73,11 @@ def ranked_from_evaluated_state(
     max_jobs_per_company: int,
     include_seen: bool = False,
 ) -> tuple[list[RankedOpportunity], int]:
-    sent_jobs = state.get("sent_jobs", {})
+    sent_identities = set() if include_seen else delivered_job_identities(state)
+    selected_identities: set[str] = set()
     ranked: list[RankedOpportunity] = []
     for key, entry in state.get("evaluated_jobs", {}).items():
         if not isinstance(entry, dict) or entry.get("status") != "included":
-            continue
-        if not include_seen and key in sent_jobs:
             continue
         job_payload = entry.get("job", {})
         if not isinstance(job_payload, dict):
@@ -87,6 +86,10 @@ def ranked_from_evaluated_state(
             job = JobPosting(**job_payload)
         except TypeError:
             continue
+        identities = job_identity_keys(job)
+        if not role_focus_allows(job) or identities & sent_identities or identities & selected_identities:
+            continue
+        selected_identities.update(identities)
         ranked.append(
             RankedOpportunity(
                 job=job,
@@ -129,6 +132,7 @@ def update_state_after_send(state: dict[str, Any], *, week_key: str, day_key: st
             "city": item.job.city,
             "url": item.job.canonical_url,
             "content_hash": item.job.content_hash,
+            "identity_keys": sorted(job_identity_keys(item.job)),
         }
         sent_jobs[item.job.stable_key] = {
             "sent_at": sent_at,
@@ -138,6 +142,7 @@ def update_state_after_send(state: dict[str, Any], *, week_key: str, day_key: st
             "title": item.job.title,
             "city": item.job.city,
             "url": item.job.canonical_url,
+            "identity_keys": sorted(job_identity_keys(item.job)),
         }
     state.setdefault("sent_weeks", {})[week_key] = {"sent_at": sent_at, "run_id": run_payload.get("run_id", "")}
     state.setdefault("sent_days", {})[day_key] = {"sent_at": sent_at, "run_id": run_payload.get("run_id", "")}
@@ -192,6 +197,31 @@ def send_config_errors(config: Any, *, recipients: list[str]) -> list[str]:
     return [f"unsupported_send_provider:{config.send_provider}"]
 
 
+def claim_selected_digest(state_store, state, run_id, selected, errors):
+    """Reserve selected identities atomically before any provider call."""
+    attempt = {
+        "status": "pending", "started_at": now_iso(),
+        "jobs": [{"key": item.job.stable_key, "url": item.job.canonical_url, "identity_keys": sorted(job_identity_keys(item.job))} for item in selected],
+        "recipient_results": [],
+    }
+    claim_delivery = getattr(state_store, "claim_delivery", None)
+    if not callable(claim_delivery):
+        errors.append("delivery_claim_unsupported")
+        return None
+    try:
+        claimed = claim_delivery(state, run_id, attempt)
+    except Exception as exc:
+        errors.append(f"delivery_journal_failed:{type(exc).__name__}")
+        return None
+    if claimed is None:
+        errors.append("delivery_claim_conflict")
+        return None
+    state.clear()
+    state.update(claimed)
+    attempt = state["delivery_attempts"][run_id]
+    return attempt
+
+
 def send_selected_digest(
     *,
     config: Any,
@@ -200,6 +230,9 @@ def send_selected_digest(
     digest_text: str,
     errors: list[str],
     sender: Sender | None,
+    state: dict[str, Any],
+    state_store: JsonStore,
+    run_id: str,
 ) -> list[Any]:
     recipient_results = []
     ranker_failed = any(error.startswith("ranker_failed") for error in errors)
@@ -218,9 +251,75 @@ def send_selected_digest(
             errors.append("no_recipients_configured")
             return recipient_results
         active_sender = sender_for_run(config, dry_run=False, sender=sender)
+        attempt = claim_selected_digest(state_store, state, run_id, selected, errors)
+        if attempt is None:
+            return recipient_results
         for recipient in recipients:
-            recipient_results.append(active_sender.send(recipient, digest_text))
+            try:
+                result = active_sender.send(recipient, digest_text)
+            except Exception as exc:
+                result = RecipientResult(recipient=recipient, ok=False, provider=str(config.send_provider), error=f"delivery_exception:{type(exc).__name__}")
+            recipient_results.append(result)
+        attempt["recipient_results"] = [result.to_dict() for result in recipient_results]
+        attempt["status"] = "sent" if all(result.ok for result in recipient_results) else "needs_review"
+        if attempt["status"] == "needs_review":
+            errors.append("delivery_needs_review")
     return recipient_results
+
+
+def persist_digest_delivery(
+    digest_run: DigestRun, state: dict[str, Any], state_store: JsonStore, *, day_key: str,
+) -> DigestRun:
+    if not digest_run.recipient_results:
+        return digest_run
+    all_ok = all(result.ok for result in digest_run.recipient_results)
+    if all_ok:
+        update_state_after_send(state, week_key=digest_run.week_key, day_key=day_key, selected=digest_run.selected_jobs, run_payload=digest_run.to_dict())
+    try:
+        state_store.save(state)
+    except Exception as exc:
+        # The pre-send hold is durable even if final receipt persistence fails.
+        digest_run.errors.append(f"delivery_receipt_save_failed:{type(exc).__name__}")
+    return DigestRun(**{**digest_run.__dict__, "state_summary": {
+        "mutated": True,
+        "evaluated_jobs": len(state.get("evaluated_jobs", {})),
+        "sent_jobs": len(state.get("sent_jobs", {})),
+        "seen_jobs": len(state.get("seen_jobs", {})),
+        "delivery_attempts": len(state.get("delivery_attempts", {})),
+    }})
+
+
+def collect_digest_sources(root, config, state, sources_path, errors):
+    """Collect configured public feeds and observed source/cache outcomes."""
+    sources_config = load_sources(root, sources_path)
+    default_cities = set(config.allowed_cities)
+    source_by_id = {str(source.get("id")): source for source in enabled_sources(sources_config)}
+    all_jobs: list[JobPosting] = []
+    source_results: list[SourceResult] = []
+    source_cache_updates: dict[str, Any] = {}
+    state_source_cache = state.get("source_cache", {})
+    defaults = sources_config.get("defaults", {}) if isinstance(sources_config.get("defaults", {}), dict) else {}
+    allow_global_remote = bool(defaults.get("allow_global_remote", config.allow_global_remote))
+    if defaults.get("cities"):
+        from .cities import canonical_city_set
+        default_cities = canonical_city_set(defaults.get("cities"))
+
+    for source in enabled_sources(sources_config):
+        source_id = str(source.get("id") or source.get("name") or "source")
+        jobs, result, cache_update = fetch_source(
+            source,
+            default_cities=default_cities,
+            allow_global_remote=allow_global_remote,
+            cache=state_source_cache.get(source_id, {}),
+        )
+        source_results.append(result)
+        all_jobs.extend(jobs)
+        if cache_update:
+            source_cache_updates[source_id] = cache_update
+        if not result.ok:
+            errors.append(f"source_failed:{source_id}:{result.error}")
+
+    return all_jobs, source_results, source_by_id, source_cache_updates
 
 
 def run_digest(
@@ -286,7 +385,7 @@ def run_digest(
             state,
             max_jobs=config.max_jobs,
             max_jobs_per_company=config.max_jobs_per_company,
-            include_seen=include_seen or force,
+            include_seen=(include_seen or force) and not send,
         )
         if not state.get("evaluated_jobs"):
             errors.append("no_evaluated_jobs")
@@ -298,6 +397,9 @@ def run_digest(
             digest_text=digest_text,
             errors=errors,
             sender=sender,
+            state=state,
+            state_store=state_store,
+            run_id=run_id,
         )
         finished_at = now_iso()
         digest_run = DigestRun(
@@ -319,55 +421,12 @@ def run_digest(
             },
             digest_text=digest_text,
         )
-        run_payload = digest_run.to_dict()
-        if send:
-            all_recipient_ok = bool(recipient_results) and all(result.ok for result in recipient_results)
-            if all_recipient_ok:
-                update_state_after_send(state, week_key=week_key, day_key=day_key, selected=selected, run_payload=run_payload)
-                state_store.save(state)
-                digest_run = DigestRun(
-                    **{
-                        **digest_run.__dict__,
-                        "state_summary": {
-                            "mutated": True,
-                            "evaluated_jobs": len(state.get("evaluated_jobs", {})),
-                            "sent_jobs": len(state.get("sent_jobs", {})),
-                            "seen_jobs": len(state.get("seen_jobs", {})),
-                        },
-                    }
-                )
-        return digest_run
+        return persist_digest_delivery(digest_run, state, state_store, day_key=day_key)
 
-    sources_config = load_sources(root, sources_path)
-    default_cities = set(config.allowed_cities)
-    source_by_id = {str(source.get("id")): source for source in enabled_sources(sources_config)}
-    all_jobs: list[JobPosting] = []
-    source_results: list[SourceResult] = []
-    source_cache_updates: dict[str, Any] = {}
-    state_source_cache = state.get("source_cache", {})
-    defaults = sources_config.get("defaults", {}) if isinstance(sources_config.get("defaults", {}), dict) else {}
-    allow_global_remote = bool(defaults.get("allow_global_remote", config.allow_global_remote))
-    if defaults.get("cities"):
-        from .cities import canonical_city_set
-        default_cities = canonical_city_set(defaults.get("cities"))
-
-    for source in enabled_sources(sources_config):
-        source_id = str(source.get("id") or source.get("name") or "source")
-        jobs, result, cache_update = fetch_source(
-            source,
-            default_cities=default_cities,
-            allow_global_remote=allow_global_remote,
-            cache=state_source_cache.get(source_id, {}),
-        )
-        source_results.append(result)
-        all_jobs.extend(jobs)
-        if cache_update:
-            source_cache_updates[source_id] = cache_update
-        if not result.ok:
-            errors.append(f"source_failed:{source_id}:{result.error}")
+    all_jobs, source_results, source_by_id, source_cache_updates = collect_digest_sources(root, config, state, sources_path, errors)
 
     filtered = apply_source_filters(all_jobs, source_by_id)
-    candidates = remove_seen_jobs(dedupe_jobs(filtered), state, include_seen=include_seen or force)
+    candidates = remove_seen_jobs(dedupe_jobs(filtered), state, include_seen=(include_seen or force) and not send)
     criteria_text = load_criteria(root)
     allow_fallback = config.deterministic_fallback if deterministic_fallback is None else deterministic_fallback
     try:
@@ -395,6 +454,9 @@ def run_digest(
         digest_text=digest_text,
         errors=errors,
         sender=sender,
+        state=state,
+        state_store=state_store,
+        run_id=run_id,
     )
 
     finished_at = now_iso()
@@ -413,15 +475,7 @@ def run_digest(
         state_summary={"mutated": False, "seen_jobs": len(state.get("seen_jobs", {}))},
         digest_text=digest_text,
     )
-    run_payload = digest_run.to_dict()
-
     if source_cache_updates:
         state.setdefault("source_cache", {}).update(source_cache_updates)
 
-    if send:
-        all_recipient_ok = bool(recipient_results) and all(result.ok for result in recipient_results)
-        if all_recipient_ok:
-            update_state_after_send(state, week_key=week_key, day_key=day_key, selected=selected, run_payload=run_payload)
-            state_store.save(state)
-            digest_run = DigestRun(**{**digest_run.__dict__, "state_summary": {"mutated": True, "seen_jobs": len(state.get("seen_jobs", {})), "sent_jobs": len(state.get("sent_jobs", {}))}})
-    return digest_run
+    return persist_digest_delivery(digest_run, state, state_store, day_key=day_key)

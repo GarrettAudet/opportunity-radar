@@ -1,21 +1,29 @@
 # OpportunityRadar Criteria
 
-Audience: Schwarzman Scholars with a diverse mix of policy, consulting, technology, startups, investing, operations, global business, public sector, international affairs, and leadership-track interests.
+Audience: Schwarzman Scholars pursuing go-to-market, strategy and business operations, deployment strategy, and product management roles open to consulting backgrounds.
+
+Hard role scope, applied before ranking and again to stored delivery candidates:
+
+- Go-to-market roles, including GTM strategy, revenue operations and sales strategy/operations.
+- Strategy and business operations roles, including BizOps and chief of staff work with strategy/operations responsibilities.
+- Deployment Strategist and Forward Deployed Strategist roles.
+- Product Manager roles only when the posting explicitly accepts consulting as an alternative background. A preference for consulting alongside mandatory PM experience does not qualify.
+- Exclude general consulting, engineering/deployment-engineering, generic operations, policy, legal and investing roles outside these functions. A famous company, an AI department, or broad company text cannot qualify an unrelated role.
 
 Prefer roles with one or more high-signal traits:
 
 - Hot startup, fast-growing company, or unusually strong founder/investor signal.
 - Big brand, elite institution, respected global platform, or iconic technology company.
-- Strategy, operations, legal/regulatory, investing, product, AI, policy, public impact, frontier technology, China/global affairs, climate, infrastructure, or cross-border business angle.
+- Strategy, operating ownership, commercial impact, deployment responsibility, or product ownership within the hard role scope above.
 - Meaningful ownership, access to senior decision-making, unusual learning curve, or clear leadership trajectory.
-- Good fit for globally minded early-career operators and analysts, including rotational programs and fellowships.
+- Good fit for globally minded early-career operators and analysts within the focused functions.
 - Explicit years-of-experience requirements should be 0-5 years. Exclude roles requiring more than 5 years.
 
 Avoid roles that are:
 
 - Generic, low-information, spammy, commission-only, or unpaid.
 - Clearly too senior without a fellowship/rotational/early-career path.
-- Recruiting, HR, admin, office management, customer support/success, generic sales/account management, or design/marketing roles unless the company and role are unusually strategic.
+- Recruiting, HR, admin, office management, customer support/success, generic sales/account management, or design/marketing roles.
 - Any role explicitly requiring more than 5 years of experience.
 - Purely local execution work with no strategic, brand, mission, learning, or leadership signal.
 - Outside the configured target cities unless explicitly allowed by config.

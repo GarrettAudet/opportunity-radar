@@ -7,7 +7,7 @@ import unittest
 import urllib.error
 from unittest.mock import patch
 
-from opportunity_radar.state import GithubJsonStore
+from opportunity_radar.state import GithubJsonStore, merge_state
 
 
 class FakeResponse:
@@ -50,8 +50,8 @@ class GithubJsonStoreTests(unittest.TestCase):
 
         body = json.loads(requests[0].data)
         uploaded = base64.b64decode(body["content"]).decode("utf-8")
-        self.assertEqual(json.loads(uploaded), payload)
-        self.assertLess(len(uploaded), len(json.dumps(payload, ensure_ascii=False, indent=2)))
+        self.assertEqual(json.loads(uploaded), merge_state({}, payload))
+        self.assertLess(len(uploaded), len(json.dumps(json.loads(uploaded), ensure_ascii=False, indent=2)))
         self.assertEqual(body["sha"], "old-sha")
         self.assertEqual(body["branch"], "main")
         self.assertEqual(requests[0].get_method(), "PUT")

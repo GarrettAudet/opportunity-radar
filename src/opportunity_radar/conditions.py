@@ -9,7 +9,7 @@ from typing import Any, Iterable
 
 from .cities import canonical_city_set
 from .config import read_json
-from .filtering import MAX_REQUIRED_YEARS, years_experience_allowed
+from .filtering import MAX_REQUIRED_YEARS, role_focus_allows, years_experience_allowed
 from .models import JobPosting
 from .state import load_json_from_github
 
@@ -242,7 +242,7 @@ def match_job_conditions(
             if term not in matched_terms:
                 matched_terms.append(term)
 
-    if role_groups and not role_group_ids:
+    if not role_focus_allows(job) or (role_groups and not role_group_ids):
         return rejected_match(job, "no_role_group", posted_at=posted_at, age_days=age_days)
     return ConditionMatch(True, job.city, role_group_ids, role_group_labels, matched_terms, [], "", posted_at, age_days)
 

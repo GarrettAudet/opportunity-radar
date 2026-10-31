@@ -118,10 +118,12 @@ class DailyDeliveryTests(unittest.TestCase):
             seed(store)
             failed = run(store, FakeSender(fail=True), "2026-10-27T03:43:00+00:00")
             self.assertTrue(failed.recipient_results)
-            self.assertFalse(failed.state_summary["mutated"])
+            self.assertTrue(failed.state_summary["mutated"])
             self.assertFalse(store.load().get("sent_days"))
+            self.assertTrue(store.load().get("delivery_attempts"))
             succeeded = run(store, FakeSender(), "2026-10-27T04:43:00+00:00")
             self.assertTrue(succeeded.state_summary["mutated"])
+            self.assertNotEqual(failed.selected_jobs[0].job.stable_key, succeeded.selected_jobs[0].job.stable_key)
 
 
 if __name__ == "__main__":

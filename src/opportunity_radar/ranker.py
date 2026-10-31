@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from .models import JobPosting, RankedOpportunity
+from .filtering import role_focus_allows
 from .openrouter_client import OpenRouterClient, parse_json_object
 
 
@@ -13,6 +14,13 @@ class RankingError(RuntimeError):
 
 
 COOL_TERMS = {
+    "gtm": 18,
+    "go-to-market": 18,
+    "deployment strategist": 20,
+    "forward deployed strategist": 20,
+    "bizops": 18,
+    "revenue operations": 18,
+    "revops": 18,
     "ai": 18,
     "artificial intelligence": 18,
     "machine learning": 16,
@@ -150,6 +158,7 @@ def rank_with_llm(
     min_selected: int = 0,
     client: OpenRouterClient | None = None,
 ) -> list[RankedOpportunity]:
+    jobs = [job for job in jobs if role_focus_allows(job)]
     if not jobs:
         return []
     client = client or OpenRouterClient()
@@ -221,6 +230,7 @@ Return one row for every candidate key. Aim for {min(max(0, min_selected), max_s
 
 
 def select_ranked(ranked: list[RankedOpportunity], *, max_selected: int, min_selected: int = 0) -> list[RankedOpportunity]:
+    ranked = [item for item in ranked if role_focus_allows(item.job)]
     ranked.sort(key=lambda item: item.score, reverse=True)
     selected = [item for item in ranked if item.include]
     target = min(max(0, min_selected), max_selected, len(ranked))
