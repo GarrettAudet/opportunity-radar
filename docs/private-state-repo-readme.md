@@ -7,7 +7,9 @@ This private repo stores runtime configuration and durable send state for the de
 - `discovery.json` - Common Crawl registry and board-polling limits.
 - `sources.json` - optional configured source fallback.
 - `conditions.json` - posting recency, target locations, role groups, exclude terms, and years-of-experience rules.
-- `opportunity-state.json` - board registry, seen jobs, sent weeks, source cache headers, and recent run summaries.
+- `opportunity-state.json` - board registry, evaluated jobs, sent jobs/days/weeks, durable delivery attempts, source cache headers, and recent run summaries. Discovery records are separate from delivery receipts. Pending or uncertain attempts suppress their job identities until an operator reconciles provider receipts; do not clear these holds as part of daily discovery.
+
+Delivery claims use GitHub SHA compare-and-swap; each retry checks the latest claims and sent identities before authorizing a provider call. File-backed state uses a shared OS lock and atomic replacement for both claims and ordinary merged saves. Attempt IDs are one-use. Custom state stores without atomic claiming cannot send. For manual hold reconciliation, pause all senders, back up durable state and inspect actual provider receipts; preserve confirmed sent identities before removing any hold, and retain uncertain holds. There is no automatic release/reconciliation command. Do not delete a file store's sibling `.lock` while state readers/writers can still be running.
 - `opportunity-criteria.md` - optional private override for the ranking criteria.
 
 ## Runtime Environment

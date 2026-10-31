@@ -25,6 +25,7 @@ The [workflow](.github/workflows/opportunity-radar-schedule.yml) triggers its se
 - Discovers public Greenhouse boards from Common Crawl and stores reusable board tokens in state.
 - Polls active ATS boards daily, normalizes target-city postings, and filters out noisy roles before ranking.
 - Uses `docs/opportunity-criteria.md` plus an LLM ranker to decide which roles belong in the digest.
+- Requires a focused role before ranking and delivery: go-to-market, strategy/business operations, deployment strategy, or product management with an explicit consulting alternative. Company prestige and legacy broad role groups cannot override this gate.
 - Stores evaluated jobs in durable JSON state so the daily digest can send only unsent included opportunities.
 - Sends at most one daily plain-text email through Gmail SMTP to a configured Google Group when unsent matches are available.
 - Leaves subscriber management, additions, removals, and delivery permissions to Google Groups.
@@ -53,6 +54,14 @@ Manual workflow tasks behave differently:
 A scheduled daily run sends only when `OPPORTUNITY_SCHEDULER_ENABLED=true`, at or after `OPPORTUNITY_SEND_HOUR` in `OPPORTUNITY_TIMEZONE`. The window stays open until local midnight so delayed runs can catch up. The saved `sent_days` entry prevents another send on that local date, including manual retries. The next day can send new jobs even within the same week. With no unsent matches, the default is to skip an empty email and try again later. Weekly mode still uses `OPPORTUNITY_SEND_DOW` and `sent_weeks`; legacy weekly markers prevent a duplicate on the day daily mode is enabled.
 
 Manual `daily-send` bypasses the time-of-day guard but keeps daily and job duplicate suppression. The workflow accepts the old `weekly-preview` and `weekly-send` task names as aliases; the CLI filename `scripts/run_weekly_digest.py` is retained for compatibility and follows the configured frequency.
+
+Delivery history uses both the source job key and normalized posting/application URLs. Common tracking parameters and Greenhouse host aliases do not make a previously delivered job new. Distinct requisition URLs remain distinct, even when titles match. `evaluated_jobs` records discovery decisions; `sent_jobs` and legacy `seen_jobs` entries with a delivery timestamp record actual delivery. The digest reapplies the role gate to old evaluated records every day.
+
+Before contacting a delivery provider, the sender acquires a one-use `delivery_attempts` claim at the durable store. GitHub uses a SHA-conditional write and checks existing delivery identities on every conflict retry. File storage uses a shared sibling OS lock, read/merge/write and atomic replacement; stale discovery saves retain receipts and holds. A competing job identity or a reused attempt ID cannot authorize another send. Custom stores must implement the atomic `claim_delivery` interface or sending fails closed.
+
+A partial failure, timeout, or failed receipt write leaves those jobs suppressed for all recipients pending operator review. A failed pre-send state write prevents delivery. Review provider receipts before reconciling held jobs; record confirmed deliveries in `sent_jobs` before removing a hold, and release undelivered jobs only after non-delivery is established. Pause all senders and retain a state backup before a manual reconciliation; no automated release or receipt inference is implemented. Keep the file store's sibling `.lock` file in place while any process can access the state. The script never automatically retries held jobs. `--force` bypasses the cadence lock only when sending; `--include-seen` permits repeat jobs only in previews. Previewing does not save delivery state. Successful sends save the final receipts and daily/weekly markers; GitHub state writes merge existing delivery history even on the initial upload.
+
+Use [the focused conditions example](data/config/conditions.example.json) for new configuration. Existing private conditions may further restrict these roles; they cannot broaden the hard gate. For PM roles, an explicit alternative such as "product management or management consulting" or "we welcome candidates from consulting backgrounds" is required. Collaborating with consultants, a consulting bonus alongside mandatory PM experience, and company marketing copy do not qualify. Thin days remain short; minimum-count targets never broaden role eligibility.
 
 ## Architecture
 

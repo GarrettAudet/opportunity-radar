@@ -78,7 +78,7 @@ class PipelineTests(unittest.TestCase):
                 include_seen=True,
                 state_store=store,
             )
-            self.assertGreaterEqual(result.candidate_count, 3)
+            self.assertEqual(result.candidate_count, 1)
             self.assertGreaterEqual(len(result.selected_jobs), 1)
             self.assertFalse((Path(tmp) / "state.json").exists())
 
@@ -148,8 +148,9 @@ class PipelineTests(unittest.TestCase):
                     state_store=store,
                     sender=FakeSender(fail=True),
                 )
-                self.assertFalse(result.state_summary["mutated"])
-                self.assertFalse((Path(tmp) / "state.json").exists())
+                self.assertTrue(result.state_summary["mutated"])
+                self.assertFalse(store.load().get("sent_jobs"))
+                self.assertTrue(store.load()["delivery_attempts"])
 
     def test_real_twilio_send_preflights_missing_credentials(self) -> None:
         env = {"OPPORTUNITY_RECIPIENTS": "whatsapp:+15550001111"}

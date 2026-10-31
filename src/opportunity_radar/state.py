@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Protocol
@@ -11,6 +12,8 @@ import urllib.error
 import urllib.request
 
 from .models import now_iso
+from .file_lock import exclusive_file_lock
+from .filtering import delivered_job_identities
 
 
 MAX_STORED_RUNS = 50
@@ -23,6 +26,10 @@ class JsonStore(Protocol):
     def save(self, payload: dict[str, Any]) -> None:
         ...
 
+    def claim_delivery(self, payload: dict[str, Any], run_id: str, attempt: dict[str, Any]) -> dict[str, Any] | None:
+        """Atomically persist a new one-use claim, or deny an existing identity."""
+        ...
+
 
 def empty_state() -> dict[str, Any]:
     return {
@@ -32,6 +39,7 @@ def empty_state() -> dict[str, Any]:
         "sent_jobs": {},
         "sent_weeks": {},
         "sent_days": {},
+        "delivery_attempts": {},
         "evaluated_jobs": {},
         "source_cache": {},
         "board_registry": {},
@@ -41,17 +49,62 @@ def empty_state() -> dict[str, Any]:
 
 class FileJsonStore:
     def __init__(self, path: Path) -> None:
-        self.path = path
+        self.path = path.resolve()
+        self.lock_path = self.path.with_name(self.path.name + ".lock")
 
-    def load(self) -> dict[str, Any]:
+    def _read(self) -> dict[str, Any]:
         if not self.path.exists():
-            return empty_state()
+            return {}
         return json.loads(self.path.read_text(encoding="utf-8-sig"))
 
+    def load(self) -> dict[str, Any]:
+        with exclusive_file_lock(self.lock_path):
+            return self._read() if self.path.exists() else empty_state()
+
+    def _replace(self, payload: dict[str, Any]) -> None:
+        descriptor, temporary = tempfile.mkstemp(prefix=self.path.name + ".", suffix=".tmp", dir=self.path.parent)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
     def save(self, payload: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload["updated_at"] = now_iso()
-        self.path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        with exclusive_file_lock(self.lock_path):
+            current = self._read()
+            state_keys = {"seen_jobs", "sent_jobs", "sent_days", "sent_weeks", "delivery_attempts", "evaluated_jobs", "board_registry", "source_cache", "runs"}
+            # Config-only callers keep replacement semantics; state snapshots
+            # must retain durable delivery history across stale saves.
+            merged = merge_state(current, payload) if state_keys & (current.keys() | payload.keys()) else payload
+            self._replace(merged)
+
+    def claim_delivery(self, payload: dict[str, Any], run_id: str, attempt: dict[str, Any]) -> dict[str, Any] | None:
+        with exclusive_file_lock(self.lock_path):
+            claimed = delivery_claim_payload(self._read(), payload, run_id, attempt)
+            if claimed is not None:
+                self._replace(claimed)
+            return claimed
+
+
+def delivery_claim_payload(current: dict[str, Any], incoming: dict[str, Any], run_id: str, attempt: dict[str, Any]) -> dict[str, Any] | None:
+    """Called only inside a file lock or before a SHA-conditional GitHub PUT."""
+    merged = merge_state(current, incoming)
+    if not run_id or run_id in merged["delivery_attempts"]:
+        return None
+    identities: set[str] = set()
+    for job in attempt.get("jobs", []):
+        keys = job.get("identity_keys") if isinstance(job, dict) else None
+        if not isinstance(keys, list) or not keys or not all(isinstance(key, str) and key for key in keys):
+            raise ValueError("invalid_delivery_claim_identity")
+        identities.update(keys)
+    if identities & delivered_job_identities(merged):
+        return None
+    merged["delivery_attempts"][run_id] = attempt
+    return merged
 
 
 class GithubJsonStore:
@@ -125,12 +178,41 @@ class GithubJsonStore:
         payload, _sha = self.load_with_sha()
         return payload
 
+    def claim_delivery(self, payload: dict[str, Any], run_id: str, attempt: dict[str, Any]) -> dict[str, Any] | None:
+        for retry in range(3):
+            current, sha = self.load_with_sha()
+            claimed = delivery_claim_payload(current, payload, run_id, attempt)
+            if claimed is None:
+                return None
+            body = {
+                "message": "Claim OpportunityRadar delivery",
+                "content": base64.b64encode(json.dumps(claimed, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).decode("ascii"),
+                "branch": self.ref,
+            }
+            if sha:
+                body["sha"] = sha
+            put_url = f"https://api.github.com/repos/{self.repo}/contents/{quote(self.path)}"
+            try:
+                with urllib.request.urlopen(self._request(put_url, method="PUT", data=json.dumps(body).encode("utf-8")), timeout=30):
+                    return claimed
+            except urllib.error.HTTPError as exc:
+                if exc.code in (409, 500, 502, 503, 504) and retry < 2:
+                    if exc.code != 409:
+                        time.sleep(2 ** retry)
+                    # Rebuild the claim against current durable identities on
+                    # every CAS retry. An ambiguous committed claim is denied
+                    # on reload, including its original caller's attempt ID.
+                    continue
+                raise
+        return None
+
     def save(self, payload: dict[str, Any]) -> None:
         write_payload = payload
         for attempt in range(3):
             current, sha = self.load_with_sha()
-            if attempt:
-                write_payload = merge_state(current, write_payload)
+            # The caller may hold an old discovery snapshot. Adopting the latest
+            # SHA without merging would overwrite intervening delivery receipts.
+            write_payload = merge_state(current, write_payload)
             write_payload["updated_at"] = now_iso()
             body: dict[str, Any] = {
                 "message": "Update OpportunityRadar state",
@@ -158,30 +240,35 @@ class GithubJsonStore:
                     continue
                 # urllib's default exception hides GitHub's validation reason.
                 # Report only error metadata, never the request or state data.
-                try:
-                    error = json.loads(exc.read())
-                except (ValueError, OSError):
-                    error = {}
-                if isinstance(error, dict):
-                    detail = {
-                        "message": error.get("message", ""),
-                        "errors": error.get("errors", []),
-                        "upload_base64_bytes": len(body["content"]),
-                    }
-                    # GitHub can echo invalid values; do not log those.
-                    if isinstance(detail["errors"], list):
-                        detail["errors"] = [
-                            {key: item[key] for key in ("resource", "field", "code", "message") if key in item}
-                            for item in detail["errors"] if isinstance(item, dict)
-                        ]
-                    else:
-                        detail["errors"] = []
-                    summary = json.dumps(detail, ensure_ascii=True)
-                    for sensitive in (self.token, self.repo, self.path):
-                        if sensitive:
-                            summary = summary.replace(sensitive, "[redacted]")
-                    exc.msg = f"{exc.reason}; GitHub validation: {summary[:1500]}"
+                annotate_github_error(exc, len(body["content"]), (self.token, self.repo, self.path))
                 raise
+
+
+def annotate_github_error(exc, encoded_bytes, sensitive_values):
+    """Attach bounded provider metadata while redacting store identifiers."""
+    try:
+        error = json.loads(exc.read())
+    except (ValueError, OSError):
+        error = {}
+    if isinstance(error, dict):
+        detail = {
+            "message": error.get("message", ""),
+            "errors": error.get("errors", []),
+            "upload_base64_bytes": encoded_bytes,
+        }
+        # GitHub can echo invalid values; do not log those.
+        if isinstance(detail["errors"], list):
+            detail["errors"] = [
+                {key: item[key] for key in ("resource", "field", "code", "message") if key in item}
+                for item in detail["errors"] if isinstance(item, dict)
+            ]
+        else:
+            detail["errors"] = []
+        summary = json.dumps(detail, ensure_ascii=True)
+        for sensitive in sensitive_values:
+            if sensitive:
+                summary = summary.replace(sensitive, "[redacted]")
+        exc.msg = f"{exc.reason}; GitHub validation: {summary[:1500]}"
 
 
 def merge_state(current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
@@ -190,6 +277,7 @@ def merge_state(current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, 
     merged["sent_jobs"] = {**current.get("sent_jobs", {}), **incoming.get("sent_jobs", {})}
     merged["sent_weeks"] = {**current.get("sent_weeks", {}), **incoming.get("sent_weeks", {})}
     merged["sent_days"] = {**current.get("sent_days", {}), **incoming.get("sent_days", {})}
+    merged["delivery_attempts"] = {**current.get("delivery_attempts", {}), **incoming.get("delivery_attempts", {})}
     merged["evaluated_jobs"] = {**current.get("evaluated_jobs", {}), **incoming.get("evaluated_jobs", {})}
     merged["source_cache"] = {**current.get("source_cache", {}), **incoming.get("source_cache", {})}
     merged["board_registry"] = {**current.get("board_registry", {}), **incoming.get("board_registry", {})}

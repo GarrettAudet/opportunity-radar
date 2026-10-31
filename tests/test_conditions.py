@@ -46,14 +46,14 @@ class ConditionTests(unittest.TestCase):
         self.assertEqual(match.rejection_reason, "no_role_group")
 
     def test_rejects_excluded_keyword_with_boundaries(self) -> None:
-        self.assertTrue(match_job_conditions(job("Internal Operations Associate"), CONDITIONS).allowed)
+        self.assertTrue(match_job_conditions(job("Internal Business Operations Associate"), CONDITIONS).allowed)
         match = match_job_conditions(job("Operations Intern"), CONDITIONS)
         self.assertFalse(match.allowed)
         self.assertEqual(match.rejection_reason, "excluded_keyword")
 
     def test_excluded_seniority_uses_metadata_not_full_description(self) -> None:
         conditions = {**CONDITIONS, "exclude_any": ["director", "senior director"]}
-        allowed = match_job_conditions(job("Operations Coordinator", "This role reports to the Senior Director of Operations."), conditions)
+        allowed = match_job_conditions(job("Business Operations Coordinator", "This role reports to the Senior Director of Operations."), conditions)
         self.assertTrue(allowed.allowed)
         rejected = match_job_conditions(job("Director, Operations"), conditions)
         self.assertFalse(rejected.allowed)
